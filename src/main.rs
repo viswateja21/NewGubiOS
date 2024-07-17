@@ -10,6 +10,69 @@ use core::panic::PanicInfo;
 // Include boot.s which defines _start as inline assembly in main. This allows us to do more fine
 // grained setup than if we used a naked _start function in rust. Theoretically we could use a
 // naked function + some inline asm, but this seems much more straight forward.
+
+#[repr(C,packed)]
+struct MultibootMmapEntry
+{
+  size: u32,
+  addr: u64,
+  len: u64,
+  types : u32,
+}
+
+#[repr(C,packed)]
+pub struct MultibootInfo
+{
+  /* Multiboot info version number */
+  flags: u32,
+
+  /* Available memory from BIOS */
+  mem_lower: u32,
+  mem_upper: u32,
+
+  /* "root" partition */
+  boot_device: u32,
+
+  /* Kernel command line */
+  cmdline: u32,
+
+  /* Boot-Module list */
+  mods_count : u32,
+  mods_addr : u32,
+
+  dummy : [u8;16],
+
+  /* Memory Mapping buffer */
+  mmap_length : u32,
+  mmap_addr : u32,
+
+  /* Drive Info buffer */
+  drives_length : u32,
+  drives_addr : u32,
+
+  /* ROM configuration table */
+  config_table : u32,
+
+  /* Boot Loader Name */
+  boot_loader_name : *const u8,
+
+  /* APM table */
+  apm_table : u32,
+
+}
+
+// #[repr(C, packed)]
+// pub struct MultibootInfo{
+//     flags: u32,
+//     mem_lower:u32,
+//     mem_upper: u32,
+//     boot_device: u32,
+//     cmdline: u32,
+//     mods_count: u16,
+//     mods_addr: u16,
+
+// }
+
 global_asm!(include_str!("boot.s"));
 
 #[no_mangle]
@@ -21,11 +84,26 @@ pub unsafe extern "C" fn memset(s: *mut u8, c: i32, n: usize) -> *mut u8 {
     s
 }
 
+fn print_stuff(arg: i32){
+    // let mut terminalWriter =TerminalWriter::new();
+    // terminalWriter.putint(arg);
+}
+
 #[no_mangle]
-pub extern "C" fn kernel_main() -> ! {
+pub extern "C" fn kernel_main(multibootmagic: u32, info: *const MultibootInfo) -> i32 {
     let mut terminal_writer = TerminalWriter::new();
-    terminal_writer.write(b"We did it, a rust kernel!");
-    loop {}
+    // terminal_writer.write(b"We did it, a rust kernel!\n");
+    unsafe {
+        for i in 0..(*info).mmap_length {
+            let p = ((*info).mmap_addr + (core::mem::size_of::<MultibootMmapEntry>() as u32 * (i))) as *const MultibootMmapEntry;
+            terminal_writer.write(b"len: ");
+            terminal_writer.put_u32((*p).len as u32);
+            terminal_writer.write(b" addr: ");
+            terminal_writer.put_u32((*p).addr as u32);
+            terminal_writer.write(b"\n");
+        }
+    }
+    return 0;
 }
 
 /// This function is called on panic.
@@ -109,19 +187,40 @@ impl TerminalWriter {
         }
     }
 
-    fn putint(&mut self, character: i32) {
+    fn put_u64(&mut self, character: u64) {
+       self.put_u32((character >> 32) as u32);
+       self.put_u32(character as u32);
+    }
+
+    fn put_u32(&mut self, character: u32) {
         let mut numofdigits =1;
         loop {
-            if character / 10 / numofdigits == 0 {
+            if character / 10_u32.pow(numofdigits) == 0 {
                 break
             }
             numofdigits += 1;
         }
+        for digit in (1..=numofdigits).rev(){
+            let character = (character / 10_u32.pow(digit - 1)) % 10;
+            self.putchar((character + 0x30) as u8);
+        }   
+    }
 
+    fn put_i32(&mut self, mut character: i32) {
+        if (character < 0){
+            self.putchar(b'-');
+            character = -character;
+        }
+        self.put_u32(character as u32);
         
     }
 
     fn putchar(&mut self, c: u8) {
+        if b'\n' == c {
+            self.terminal_row +=1;
+            self.terminal_column = 0;
+            return;
+        }
         self.putentryat(
             c,
             self.terminal_color,
